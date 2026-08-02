@@ -16,4 +16,10 @@
   <pen_width type="int">20</pen_width>
   <step_size type="float">5</step_size>
 
+  <!-- Dave -> Steve FOV markers. fov_marker_size_um is a placeholder;
+       set it to the actual camera FOV size (in microns) for the
+       objective in use on this microscope. -->
+  <fov_marker_port type="int">9600</fov_marker_port>
+  <fov_marker_size_um type="float">200.0</fov_marker_size_um>
+
 </settings>

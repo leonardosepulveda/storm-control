@@ -12,9 +12,11 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 import storm_control.sc_library.hdebug as hdebug
 import storm_control.sc_library.parameters as params
+import storm_control.sc_library.tcpServer as tcpServer
 
 import storm_control.steve.comm as comm
 import storm_control.steve.coord as coord
+import storm_control.steve.fovMarker as fovMarker
 import storm_control.steve.imageCapture as imageCapture
 import storm_control.steve.imageItem as imageItem
 import storm_control.steve.mosaic as mosaic
@@ -22,6 +24,7 @@ import storm_control.steve.positions as positions
 import storm_control.steve.qtRegexFileDialog as qtRegexFileDialog
 import storm_control.steve.sections as sections
 import storm_control.steve.steveItems as steveItems
+import storm_control.steve.tcpControl as tcpControl
 
 import storm_control.steve.qtdesigner.steve_ui as steveUi
 
@@ -60,7 +63,19 @@ class Window(QtWidgets.QMainWindow):
         self.image_capture = imageCapture.MovieCapture(comm = self.comm,
                                                        item_store = self.item_store,
                                                        parameters = parameters)
-                
+
+        # Dave -> Steve FOV marker server. Separate from self.comm above,
+        # which is Steve's own (client-side, on-demand) connection to Hal;
+        # this is a listening server for Dave to report FOV markers as
+        # movies complete and clear them at round boundaries.
+        self.fov_marker_server = tcpServer.TCPServer(port = self.parameters.get("fov_marker_port", 9600),
+                                                     server_name = "Steve",
+                                                     verbose = True)
+        self.fov_marker_control = tcpControl.Controller(item_store = self.item_store,
+                                                        fov_size_um = self.parameters.get("fov_marker_size_um", 200.0),
+                                                        server = self.fov_marker_server,
+                                                        verbose = True)
+
         #
         # Module initializations
         #
@@ -146,6 +161,15 @@ class Window(QtWidgets.QMainWindow):
         self.ui.actionSave_Snapshot.triggered.connect(self.handleSnapshot)
         self.ui.actionSet_Working_Directory.triggered.connect(self.handleSetWorkingDirectory)
 
+        # Manual equivalent of Dave's "Clear FOV Boundaries" recipe action
+        # (DAClearFOVMarkers), for clearing FOV markers on request rather
+        # than waiting for the next round boundary. Added here rather than
+        # in qtdesigner/steve_ui.py so no Designer file regeneration is
+        # needed for this one action.
+        self.action_clear_fov_markers = QtWidgets.QAction(self.tr("Clear FOV Boundaries"), self)
+        self.ui.menuFile.insertAction(self.ui.actionQuit, self.action_clear_fov_markers)
+        self.action_clear_fov_markers.triggered.connect(self.handleClearFOVMarkers)
+
         # Mosaic
         self.ui.actionAdjust_Contrast.triggered.connect(self.mosaic.handleAdjustContrast)
 
@@ -170,10 +194,15 @@ class Window(QtWidgets.QMainWindow):
     def cleanUp(self):
         self.settings.setValue("position", self.pos())
         self.settings.setValue("size", self.size())
+        self.fov_marker_control.cleanUp()
 
     @hdebug.debug
     def closeEvent(self, event):
         self.cleanUp()
+
+    @hdebug.debug
+    def handleClearFOVMarkers(self, boolean):
+        self.item_store.removeItemType(fovMarker.FOVMarkerItem)
 
     @hdebug.debug
     def handleDeleteImages(self, boolean):

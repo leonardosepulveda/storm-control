@@ -131,6 +131,11 @@ class XMLRecipeParser(QtWidgets.QWidget):
                 if new_node is not None:
                     primitives_xml.append(new_node)
 
+            elif child.tag == "clear_fov_boundaries": # Handle the clear_fov_boundaries tag
+                new_node = daveActions.DAClearFOVMarkers().createETree({})
+                if new_node is not None:
+                    primitives_xml.append(new_node)
+
             elif child.tag == "email": # Handle the email tag
                 # Grab the elements of this node and create a dictionary
                 dictionary = {"subject": None,

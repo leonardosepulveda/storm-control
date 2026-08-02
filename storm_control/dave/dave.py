@@ -33,6 +33,7 @@ import storm_control.dave.sequenceViewer as sequenceViewer
 
 # Communication
 import storm_control.sc_library.tcpClient as tcpClient
+import storm_control.sc_library.tcpMessage as tcpMessage
 
 # UI
 import storm_control.dave.qtdesigner.dave_ui as daveUi
@@ -73,6 +74,14 @@ class CommandEngine(QtCore.QObject):
         self.kilroyClient = tcpClient.TCPClient(port = 9500,
                                                 server_name = "Kilroy",
                                                 verbose = False)
+
+        # Steve Client. Used both for the "steve" action type (e.g.
+        # DAClearFOVMarkers, dispatched below like any other action) and,
+        # outside of the action list entirely, for the automatic per-movie
+        # FOV marker notifications sent from Dave.sendFOVMarkerToSteve().
+        self.steveClient = tcpClient.TCPClient(port = 9600,
+                                               server_name = "Steve",
+                                               verbose = False)
     
     ## abort
     #
@@ -102,6 +111,8 @@ class CommandEngine(QtCore.QObject):
             self.command.start(self.HALClient, test_mode)
         elif (self.command.getActionType() == "kilroy"):
             self.command.start(self.kilroyClient, test_mode)
+        elif (self.command.getActionType() == "steve"):
+            self.command.start(self.steveClient, test_mode)
         elif (self.command.getActionType() == "dave"):
             self.dave_action.emit(self.command.getMessage())
         elif (self.command.getActionType() == "NA"):
@@ -170,6 +181,16 @@ class Dave(QtWidgets.QMainWindow):
         self.skip_warning = False
         self.needs_hal = False
         self.needs_kilroy = False
+        self.needs_steve = False
+
+        # Track the most recently commanded stage position and whether a
+        # warning has fired since arriving there, so that when the movie at
+        # that position completes we can tell Steve where to draw a FOV
+        # marker and whether to color it as a warning. Neither of these is
+        # tracked anywhere else in Dave (see the CLAUDE.md "Inter-process
+        # communication" section).
+        self.last_stage_position = None
+        self.fov_has_warning = False
 
         # UI setup.
         self.ui = daveUi.Ui_MainWindow()
@@ -344,7 +365,51 @@ class Dave(QtWidgets.QMainWindow):
     #
     def handleClearWarnings(self, dummy):
         self.ui.currentWarnings.clearWarnings()
-                
+
+    ## updateFOVMarkerState
+    #
+    # Called from handleDone(), before the command sequence advances, with
+    # the action that just completed still current. Updates the tracked
+    # last commanded stage position / warning state, and, once a movie at a
+    # known position completes, tells Steve to draw a FOV marker there.
+    #
+    def updateFOVMarkerState(self):
+        current_item = self.ui.commandSequenceTreeView.getCurrentItem()
+        if current_item is None:
+            return
+        message = current_item.getDaveAction().getMessage()
+        if message is None:
+            return
+
+        if message.isType("Move Stage"):
+            self.last_stage_position = {"stage_x": message.getData("stage_x"),
+                                        "stage_y": message.getData("stage_y")}
+            self.fov_has_warning = False
+
+        elif message.isType("Take Movie") and (self.last_stage_position is not None):
+            self.sendFOVMarkerToSteve(self.last_stage_position, self.fov_has_warning)
+
+    ## sendFOVMarkerToSteve
+    #
+    # Best-effort notification to Steve that a FOV was just imaged. This is
+    # not part of the DaveAction/CommandEngine sequence (unlike
+    # DAClearFOVMarkers) as it happens automatically after every movie
+    # rather than being authored into the recipe, and a missing Steve
+    # connection here must never pause an actual acquisition.
+    #
+    # @param position A dict with "stage_x"/"stage_y" (microns).
+    # @param warning True if a warning fired for this FOV since the move.
+    #
+    def sendFOVMarkerToSteve(self, position, warning):
+        if not self.needs_steve:
+            return
+        message = tcpMessage.TCPMessage(message_type = "Draw FOV Marker",
+                                        message_data = {"stage_x": position["stage_x"],
+                                                        "stage_y": position["stage_y"],
+                                                        "warning": warning})
+        if self.command_engine.steveClient.startCommunication():
+            self.command_engine.steveClient.sendMessage(message)
+
     ## handleDaveAction
     #
     # Handle a Dave-specific action requested from the command engine.
@@ -408,6 +473,11 @@ class Dave(QtWidgets.QMainWindow):
         if self.test_mode:
             self.ui.commandSequenceTreeView.updateEstimates()
 
+        # Track stage position / warnings for Steve's FOV markers, based on
+        # the action that just completed (before advancing to the next one).
+        if not self.test_mode:
+            self.updateFOVMarkerState()
+
         # Increment command to the next valid command / action.
         next_command = self.ui.commandSequenceTreeView.getNextItem()
 
@@ -431,6 +501,8 @@ class Dave(QtWidgets.QMainWindow):
                 self.command_engine.HALClient.stopCommunication()
             if self.needs_kilroy:
                 self.command_engine.kilroyClient.stopCommunication()
+            if self.needs_steve:
+                self.command_engine.steveClient.stopCommunication()
 
         # Continue with next command.
         else: 
@@ -568,7 +640,9 @@ class Dave(QtWidgets.QMainWindow):
                 self.command_engine.HALClient.stopCommunication()
             if self.needs_kilroy:
                 self.command_engine.kilroyClient.stopCommunication()
-            
+            if self.needs_steve:
+                self.command_engine.steveClient.stopCommunication()
+
             # Display errors.
             if (self.ui.errorMsgCheckBox.isChecked()):
                 self.notifier.sendMessage("Acquisition Problem",
@@ -718,6 +792,12 @@ class Dave(QtWidgets.QMainWindow):
                                                message_str = message_str,
                                                descriptor = "Warning " + str(num_warnings+1))
 
+            # Remember that the FOV currently being imaged had a warning, so
+            # that the marker Steve draws for it (once the movie completes)
+            # is colored as a warning. Reset in handleDone() on the next
+            # "Move Stage" completion.
+            self.fov_has_warning = True
+
             # Check to see if the number of warnings is larger than the allowed number
             if self.ui.currentWarnings.count() >= self.ui.numWarningsToPause.value():
                 # Update Error Message
@@ -828,11 +908,17 @@ class Dave(QtWidgets.QMainWindow):
     def validateAndStartTCP(self):
         self.needs_hal = False
         self.needs_kilroy = False
+        self.needs_steve = False
         types = self.ui.commandSequenceTreeView.getActionTypes()
         if ("hal" in types):
             self.needs_hal = True
         if ("kilroy" in types):
             self.needs_kilroy = True
+        if ("steve" in types) or self.needs_hal:
+            # Any sequence that takes movies (needs_hal) also reports FOV
+            # markers to Steve as movies complete (see handleDone()), even
+            # though no "steve" action appears explicitly in the sequence.
+            self.needs_steve = True
 
         tcp_ready = True
 
@@ -853,6 +939,17 @@ class Dave(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.information(self,
                                                   "TCP Communication Error",
                                                   err_message)
+        if self.needs_steve:
+            # Unlike Hal/Kilroy, Steve connectivity is opportunistic: FOV
+            # marker visualization is a convenience, not a requirement for
+            # acquisition, so a missing Steve never blocks or pauses a run
+            # started without it (this only affects the automatic per-movie
+            # marker; a sequence that explicitly uses "clear_fov_boundaries"
+            # will still raise a normal action error if Steve is required
+            # but unreachable when that action executes).
+            if not self.command_engine.steveClient.startCommunication():
+                hdebug.logText("Could not connect to Steve; FOV markers will not be drawn.")
+
         return tcp_ready
 
     ## quit

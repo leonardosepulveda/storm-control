@@ -450,6 +450,54 @@ class DAClearWarnings(DaveAction):
         self.resetPause() # Allow a paused action to be rerun without a pause
 
 
+## DAClearFOVMarkers
+#
+# Clear the FOV boundary/warning markers that Dave has drawn on Steve's
+# mosaic. This is deliberately a separate action (and TCP round trip to
+# Steve) from DAClearWarnings above: clearing Dave's own warning count
+# (which controls the max-warnings-before-pause behavior) and clearing
+# Steve's visual markers are independent concerns that just happen to
+# often be placed at the same point in a recipe (see clear_warnings in
+# xml_generators/v2Generator.py and storm_control/dave/test/test_recipe.xml
+# for where clear_warnings is placed today, at the end of each round's
+# movie loop).
+#
+class DAClearFOVMarkers(DaveAction):
+
+    ## __init__
+    #
+    def __init__(self):
+        DaveAction.__init__(self)
+        self.action_type = "steve"
+
+    ## createETree
+    #
+    # @param dictionary A dictionary.
+    #
+    # @return A ElementTree object or None.
+    #
+    def createETree(self, dictionary):
+        block = ElementTree.Element(str(type(self).__name__))
+        return block
+
+    ## getDescriptor
+    #
+    # @return A string that describes the action.
+    #
+    def getDescriptor(self):
+        return "Clear Steve FOV boundary markers"
+
+    ## setup
+    #
+    # Perform post creation initialization.
+    #
+    # @param node The node of an ElementTree.
+    #
+    def setup(self, node):
+        self.message = tcpMessage.TCPMessage(message_type = "Clear FOV Markers",
+                                             message_data = {})
+
+
 ## DADelay
 #
 # This action introduces a defined delay.

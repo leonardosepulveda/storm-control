@@ -1,4 +1,11 @@
 #################
+## Claude Code local history
+#################
+/prompt_history/
+/verbatim_history/
+/.claude/settings.local.json
+
+#################
 ## log-files
 #################
 *.log

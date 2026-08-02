@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"c:\\Users\\Leonardo\\Dropbox\\research\\analysis\\LineageTracing\\260801_LT062_storm_control_updates\\storm-control\\.claude\\hooks\\save_verbatim.ps1\"",
+            "timeout": 30,
+            "statusMessage": "Saving verbatim response"
+          }
+        ]
+      }
+    ]
+  }
+}

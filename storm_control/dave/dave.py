@@ -75,10 +75,14 @@ class CommandEngine(QtCore.QObject):
                                                 server_name = "Kilroy",
                                                 verbose = False)
 
-        # Steve Client. Used both for the "steve" action type (e.g.
-        # DAClearFOVMarkers, dispatched below like any other action) and,
-        # outside of the action list entirely, for the automatic per-movie
-        # FOV marker notifications sent from Dave.sendFOVMarkerToSteve().
+        # Steve Client. Never used through the normal action_type dispatch
+        # above: Steve's connection is known to be unreliable in practice,
+        # so both the automatic per-movie FOV marker notification and the
+        # "Clear FOV Markers" action are sent as best-effort, fire-and-forget
+        # messages directly from Dave (see Dave.sendFOVMarkerToSteve() and
+        # Dave.sendClearFOVMarkersToSteve()) rather than through the
+        # blocking DaveAction/CommandEngine TCP-reply machinery that hal/
+        # kilroy actions use.
         self.steveClient = tcpClient.TCPClient(port = 9600,
                                                server_name = "Steve",
                                                verbose = False)
@@ -111,8 +115,6 @@ class CommandEngine(QtCore.QObject):
             self.command.start(self.HALClient, test_mode)
         elif (self.command.getActionType() == "kilroy"):
             self.command.start(self.kilroyClient, test_mode)
-        elif (self.command.getActionType() == "steve"):
-            self.command.start(self.steveClient, test_mode)
         elif (self.command.getActionType() == "dave"):
             self.dave_action.emit(self.command.getMessage())
         elif (self.command.getActionType() == "NA"):
@@ -191,6 +193,14 @@ class Dave(QtWidgets.QMainWindow):
         # communication" section).
         self.last_stage_position = None
         self.fov_has_warning = False
+
+        # Once a Steve connection attempt fails during a run, stop retrying
+        # for the rest of that run: Steve/Hal connections are known to drop
+        # unpredictably, and TCPClient.startCommunication() blocks for up to
+        # 1s per failed attempt (see tcpClient.connectToServer()) - retrying
+        # on every single movie for the rest of a run would otherwise stall
+        # the sequence repeatedly instead of just silently giving up once.
+        self.steve_connection_failed = False
 
         # UI setup.
         self.ui = daveUi.Ui_MainWindow()
@@ -389,26 +399,58 @@ class Dave(QtWidgets.QMainWindow):
         elif message.isType("Take Movie") and (self.last_stage_position is not None):
             self.sendFOVMarkerToSteve(self.last_stage_position, self.fov_has_warning)
 
+    ## steveConnectionAvailable
+    #
+    # Best-effort connection check with a per-run backoff. Steve/Hal
+    # connections are known to drop unpredictably in practice, and
+    # TCPClient.startCommunication() blocks for up to 1s per failed
+    # connection attempt (see tcpClient.connectToServer()), so once one
+    # attempt fails during a run we stop retrying for the rest of that run
+    # rather than re-incurring that stall on every subsequent movie/action.
+    # This (not just "don't pause on error") is what keeps a flaky or
+    # absent Steve from having any visible effect on a real acquisition.
+    #
+    # @return True if Steve is connected and ready to receive a message.
+    #
+    def steveConnectionAvailable(self):
+        if not self.needs_steve or self.steve_connection_failed:
+            return False
+        if self.command_engine.steveClient.startCommunication():
+            return True
+        self.steve_connection_failed = True
+        return False
+
     ## sendFOVMarkerToSteve
     #
     # Best-effort notification to Steve that a FOV was just imaged. This is
-    # not part of the DaveAction/CommandEngine sequence (unlike
-    # DAClearFOVMarkers) as it happens automatically after every movie
-    # rather than being authored into the recipe, and a missing Steve
-    # connection here must never pause an actual acquisition.
+    # not part of the DaveAction/CommandEngine sequence as it happens
+    # automatically after every movie rather than being authored into the
+    # recipe.
     #
     # @param position A dict with "stage_x"/"stage_y" (microns).
     # @param warning True if a warning fired for this FOV since the move.
     #
     def sendFOVMarkerToSteve(self, position, warning):
-        if not self.needs_steve:
+        if not self.steveConnectionAvailable():
             return
         message = tcpMessage.TCPMessage(message_type = "Draw FOV Marker",
                                         message_data = {"stage_x": position["stage_x"],
                                                         "stage_y": position["stage_y"],
                                                         "warning": warning})
-        if self.command_engine.steveClient.startCommunication():
-            self.command_engine.steveClient.sendMessage(message)
+        self.command_engine.steveClient.sendMessage(message)
+
+    ## sendClearFOVMarkersToSteve
+    #
+    # Best-effort notification to Steve to clear its FOV markers, sent from
+    # handleDaveAction() when a "Clear FOV Markers" action (DAClearFOVMarkers)
+    # runs. See steveConnectionAvailable() for why this never blocks/pauses.
+    #
+    def sendClearFOVMarkersToSteve(self):
+        if not self.steveConnectionAvailable():
+            return
+        message = tcpMessage.TCPMessage(message_type = "Clear FOV Markers",
+                                        message_data = {})
+        self.command_engine.steveClient.sendMessage(message)
 
     ## handleDaveAction
     #
@@ -422,8 +464,11 @@ class Dave(QtWidgets.QMainWindow):
         elif (message.getType() == "Dave Email"): # Handle an email request
             self.notifier.sendMessage(message.getData("subject"), message.getData("body"))
             self.command_engine.handleActionComplete(message) # Return message back to command engine
+        elif (message.getType() == "Clear FOV Markers"): # Best-effort, never blocks (see DAClearFOVMarkers)
+            self.sendClearFOVMarkersToSteve()
+            self.command_engine.handleActionComplete(message)
         else:
-            pass # No other options currently        
+            pass # No other options currently
         
     ## handleDetailsUpdate
     #
@@ -909,16 +954,15 @@ class Dave(QtWidgets.QMainWindow):
         self.needs_hal = False
         self.needs_kilroy = False
         self.needs_steve = False
+        self.steve_connection_failed = False
         types = self.ui.commandSequenceTreeView.getActionTypes()
         if ("hal" in types):
             self.needs_hal = True
+            # Any sequence that takes movies also reports FOV markers to
+            # Steve as movies complete (see handleDone()/updateFOVMarkerState()).
+            self.needs_steve = True
         if ("kilroy" in types):
             self.needs_kilroy = True
-        if ("steve" in types) or self.needs_hal:
-            # Any sequence that takes movies (needs_hal) also reports FOV
-            # markers to Steve as movies complete (see handleDone()), even
-            # though no "steve" action appears explicitly in the sequence.
-            self.needs_steve = True
 
         tcp_ready = True
 
@@ -940,14 +984,15 @@ class Dave(QtWidgets.QMainWindow):
                                                   "TCP Communication Error",
                                                   err_message)
         if self.needs_steve:
-            # Unlike Hal/Kilroy, Steve connectivity is opportunistic: FOV
-            # marker visualization is a convenience, not a requirement for
-            # acquisition, so a missing Steve never blocks or pauses a run
-            # started without it (this only affects the automatic per-movie
-            # marker; a sequence that explicitly uses "clear_fov_boundaries"
-            # will still raise a normal action error if Steve is required
-            # but unreachable when that action executes).
+            # Steve connectivity is opportunistic, unlike Hal/Kilroy above:
+            # FOV marker visualization is a convenience, not a requirement
+            # for acquisition, and Steve's connection is known to be
+            # unreliable in practice, so nothing about it may block, pause,
+            # or error out a real run. See steveConnectionAvailable() for
+            # the per-run backoff that stops retrying (and re-incurring a
+            # blocking ~1s connection attempt) once Steve has failed once.
             if not self.command_engine.steveClient.startCommunication():
+                self.steve_connection_failed = True
                 hdebug.logText("Could not connect to Steve; FOV markers will not be drawn.")
 
         return tcp_ready

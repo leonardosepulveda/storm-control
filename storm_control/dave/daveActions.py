@@ -453,14 +453,22 @@ class DAClearWarnings(DaveAction):
 ## DAClearFOVMarkers
 #
 # Clear the FOV boundary/warning markers that Dave has drawn on Steve's
-# mosaic. This is deliberately a separate action (and TCP round trip to
-# Steve) from DAClearWarnings above: clearing Dave's own warning count
-# (which controls the max-warnings-before-pause behavior) and clearing
-# Steve's visual markers are independent concerns that just happen to
-# often be placed at the same point in a recipe (see clear_warnings in
-# xml_generators/v2Generator.py and storm_control/dave/test/test_recipe.xml
-# for where clear_warnings is placed today, at the end of each round's
-# movie loop).
+# mosaic. This is deliberately a separate action from DAClearWarnings
+# above: clearing Dave's own warning count (which controls the
+# max-warnings-before-pause behavior) and clearing Steve's visual markers
+# are independent concerns that just happen to often be placed at the
+# same point in a recipe (see clear_warnings in xml_generators/
+# v2Generator.py and storm_control/dave/test/test_recipe.xml for where
+# clear_warnings is placed today, at the end of each round's movie loop).
+#
+# Like DAClearWarnings, action_type is "dave" (not "steve") and start()
+# does not wait on a TCP reply: Steve's connection is known to be
+# unreliable in practice (it can silently drop, unlike Hal/Kilroy), and
+# this feature is a visualization convenience, not a requirement for
+# acquisition, so it must never pause or error out a real run. The actual
+# best-effort send to Steve happens in Dave.handleDaveAction() via
+# Dave.sendClearFOVMarkersToSteve(), same as the automatic per-movie
+# "Draw FOV Marker" notification.
 #
 class DAClearFOVMarkers(DaveAction):
 
@@ -468,7 +476,7 @@ class DAClearFOVMarkers(DaveAction):
     #
     def __init__(self):
         DaveAction.__init__(self)
-        self.action_type = "steve"
+        self.action_type = "dave"
 
     ## createETree
     #
@@ -496,6 +504,24 @@ class DAClearFOVMarkers(DaveAction):
     def setup(self, node):
         self.message = tcpMessage.TCPMessage(message_type = "Clear FOV Markers",
                                              message_data = {})
+
+    ## start
+    #
+    # Start the action, but in this case immediately issue an all clear
+    # (the actual, best-effort send to Steve happens in Dave.handleDaveAction()).
+    #
+    # @param tcp_client The TCP client to use for communication.
+    # @param test_mode Send the command in test mode.
+    #
+    def start(self, tcp_client, test_mode):
+        pass # No blocking communication via TCP
+
+    ## cleanUp
+    #
+    # Handle clean up of the action
+    #
+    def cleanUp(self):
+        self.resetPause() # Allow a paused action to be rerun without a pause
 
 
 ## DADelay

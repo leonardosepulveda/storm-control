@@ -3,11 +3,13 @@
 Interface to Point Grey's PySpin Python module.
 
 Tested with "Spinnaker 1.19 for Python 2 and 3 - Windows (64-bit)".
+Updated to handle Spinnaker 2.0
 
 Note: As currently written this is designed to work with 12 bit cameras. See
       onImageEvent() in SpinImageEventHandler class.
 
 Hazen 01/19
+Jeff 08/20
 """
 
 import numpy
@@ -20,6 +22,20 @@ camera_list = None
 n_active_cameras = 0
 system = None
 
+# Capture the PySpin version
+try:
+    SpinImageEventClass = PySpin.ImageEventHandler
+    pyspin_version = 2
+except:
+    SpinImageEventClass = PySpin.ImageEvent
+    pyspin_version = 1
+try:
+    temp_value = PySpin.NO_COLOR_PROCESSING
+except:
+    pyspin_version = 3
+
+print("Initializing FLIR spinnaker library")
+print("...detected version: " + str(pyspin_version))
 
 class SpinnakerException(Exception):
     """
@@ -53,7 +69,7 @@ def getCamera(cam_id):
     global n_active_cameras
 
     assert camera_list is not None, "pySpinInitialize() was not called?"
-    
+        
     if isinstance(cam_id, int):
         n_active_cameras += 1
         return SpinCamera(h_camera = camera_list[cam_id])
@@ -189,7 +205,10 @@ class SpinCamera(object):
 
         # Register for image events.
         self.image_event_handler = SpinImageEventHandler(frame_buffer = self.frames)
-        self.h_camera.RegisterEvent(self.image_event_handler)
+        if pyspin_version >=2:
+            self.h_camera.RegisterEventHandler(self.image_event_handler)
+        else:
+            self.h_camera.RegisterEvent(self.image_event_handler)
                 
         # Cached properties, these are called 'nodes' in Spinakker.
         self.properties = {}
@@ -209,7 +228,6 @@ class SpinCamera(object):
         # will still be working with the old list.
         #
         self.frames.clear()
-        
         return [tmp, self.frame_size]
 
     def getProperty(self, p_name):
@@ -290,7 +308,11 @@ class SpinCamera(object):
         """
         Call this only when you are done with this class instance and camera.
         """
-        self.h_camera.UnregisterEvent(self.image_event_handler)
+        if pyspin_version >= 2:
+            self.h_camera.UnregisterEventHandler(self.image_event_handler)
+        else:
+            self.h_camera.UnregisterEvent(self.image_event_handler)
+
         self.h_camera.DeInit()
         self.h_camera = None
 
@@ -312,7 +334,7 @@ class SpinCamera(object):
         self.frames.clear()
 
 
-class SpinImageEventHandler(PySpin.ImageEvent):
+class SpinImageEventHandler(SpinImageEventClass):
     """
     This handles a new image from the camera. It converts it to a SCamData
     object and adds the object to the cameras list of frames.
@@ -323,6 +345,11 @@ class SpinImageEventHandler(PySpin.ImageEvent):
         self.acquiring = False
         self.frame_buffer = frame_buffer
         self.n_images = 0
+
+        if pyspin_version >=3:
+            self.processor = PySpin.ImageProcessor()
+            self.processor.SetColorProcessing(PySpin.SPINNAKER_COLOR_PROCESSING_ALGORITHM_NONE)
+
 
     def getNImages(self):
         return self.n_images
@@ -337,13 +364,16 @@ class SpinImageEventHandler(PySpin.ImageEvent):
         if not self.acquiring:
             image.Release()
             return
-        
+                
         # Convert to Mono16 as HAL works with numpy.uint16 arrays for images. This might
         # not work well with color cameras, but neither does HAL..
         #
         # Values are in Spinnaker/include/SpinnakerDefs.h
         #
-        image_converted = image.Convert(PySpin.PixelFormat_Mono16, PySpin.NO_COLOR_PROCESSING)
+        if pyspin_version>= 3:
+            image_converted = self.processor.Convert(image, PySpin.PixelFormat_Mono16)
+        else:
+            image_converted = image.Convert(PySpin.PixelFormat_Mono16, PySpin.NO_COLOR_PROCESSING)
 
         # Release original image from camera.
         image.Release()

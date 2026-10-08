@@ -10,7 +10,9 @@
 # Hazen 09/14
 #
 
+import datetime
 import os
+import re
 from xml.etree import ElementTree
 from PyQt5 import QtCore
 
@@ -680,6 +682,89 @@ class DAFindSum(DaveAction):
         self.message = tcpMessage.TCPMessage(message_type = "Find Sum",
                                              message_data = {"min_sum": self.min_sum})
 
+
+## DALog
+#
+# Write a small file that marks a point in the sequence (e.g. the start or
+# end of a fluidics round), so progress can be followed by listing a folder.
+# One file per event, named by time and text, holding the time and the text.
+#
+class DALog(DaveAction):
+
+    ## __init__
+    #
+    def __init__(self):
+        DaveAction.__init__(self)
+
+    ## cleanUp
+    #
+    # Handle clean up of the action
+    #
+    def cleanUp(self):
+        pass
+
+    ## createETree
+    #
+    # @param dictionary A dictionary.
+    #
+    # @return A ElementTree object or None.
+    #
+    def createETree(self, dictionary):
+        text = dictionary.get("text")
+        directory = dictionary.get("directory")
+        if text is not None and directory is not None:
+            block = ElementTree.Element(str(type(self).__name__))
+            addField(block, "text", text)
+            addField(block, "directory", directory)
+            return block
+
+    ## getDescriptor
+    #
+    # @return A string that describes the action.
+    #
+    def getDescriptor(self):
+        return "log " + self.text
+
+    ## setup
+    #
+    # Perform post creation initialization.
+    #
+    # @param node The node of an ElementTree.
+    #
+    def setup(self, node):
+        self.text = node.find("text").text
+        self.directory = node.find("directory").text
+        self.message = tcpMessage.TCPMessage(message_type = "Log",
+                                             message_data = {"text": self.text,
+                                                             "directory": self.directory})
+
+    ## start
+    #
+    # Write the log file, unless in test mode. A failed write is a warning,
+    # so it does not stop the experiment.
+    #
+    # @param dummy Ignored.
+    # @param test_mode Send the command in test mode.
+    #
+    def start(self, dummy, test_mode):
+        self.message.setTestMode(test_mode)
+
+        if self.message.isTest():
+            self.completeAction(self.message)
+            return
+
+        now = datetime.datetime.now()
+        filename = "dave_log_" + now.strftime("%y%m%d_%H%M%S") + "_"
+        filename += re.sub(r"[^A-Za-z0-9-]+", "_", self.text).strip("_") + ".txt"
+        try:
+            os.makedirs(self.directory, exist_ok = True)
+            with open(os.path.join(self.directory, filename), "w") as fp:
+                fp.write(now.strftime("%Y-%m-%d %H:%M:%S") + "\t" + self.text + "\n")
+        except OSError as error:
+            self.message.setError(True, "Could not write log " + filename + ": " + str(error))
+            self.completeActionWithWarning(self.message)
+            return
+        self.completeAction(self.message)
 
 ## DAMoveStage
 #

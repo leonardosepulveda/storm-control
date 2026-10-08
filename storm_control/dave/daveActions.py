@@ -10,6 +10,7 @@
 # Hazen 09/14
 #
 
+import os
 from xml.etree import ElementTree
 from PyQt5 import QtCore
 
@@ -887,6 +888,11 @@ class DASetDirectory(DaveAction):
     #
     def setup(self, node):
         self.directory = node.find("directory").text
+
+        # Create the directory if it does not exist yet. This runs when the
+        # sequence is loaded, so all of its directories are created up front.
+        os.makedirs(self.directory, exist_ok = True)
+
         self.message = tcpMessage.TCPMessage(message_type = "Set Directory",
                                              message_data = {"directory": self.directory})
 

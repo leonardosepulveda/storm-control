@@ -69,6 +69,9 @@ class XMLRecipeParser(QtWidgets.QWidget):
         
         self.da_primitives_xml = []
 
+        # The directory of the last <change_directory>, where <log> files go
+        self.current_directory = None
+
         # A convenient list of dave actions required for parsing a <movie> tag
         self.movie_da_actions = [daveActions.DAMoveStage(),
                                  daveActions.DASetFocusLockTarget(),
@@ -123,6 +126,16 @@ class XMLRecipeParser(QtWidgets.QWidget):
 
             elif child.tag == "change_directory": # Handle change_directory tag
                 new_node = daveActions.DASetDirectory().createETree({"directory": child.text})
+                if new_node is not None:
+                    primitives_xml.append(new_node)
+                    self.current_directory = child.text
+
+            elif child.tag == "log": # Handle <log> tag, written to the current directory
+                directory = self.current_directory
+                if directory is None: # No <change_directory> yet, use the recipe's directory
+                    directory = self.directory
+                new_node = daveActions.DALog().createETree({"text": child.text,
+                                                            "directory": directory})
                 if new_node is not None:
                     primitives_xml.append(new_node)
 
